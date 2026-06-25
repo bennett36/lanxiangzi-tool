@@ -1,20 +1,21 @@
 # -*- coding: utf-8 -*-
 import os
-import sys
+import glob                      # <--- 关键修复：导入 glob
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Alignment
 import threading
+from datetime import datetime
 
 class ExcelMergeApp:
     def __init__(self, root):
-        print("初始化...")
         self.root = root
         root.title("兰湘子门店数据汇总工具")
         root.geometry("600x280")
         root.resizable(False, False)
 
+        # 文件夹选择
         tk.Label(root, text="请选择包含 Excel 文件的文件夹：", font=("Arial", 10)).pack(pady=(20, 5))
         frame_folder = tk.Frame(root)
         frame_folder.pack(pady=5, padx=20, fill=tk.X)
@@ -24,7 +25,8 @@ class ExcelMergeApp:
         self.folder_btn = tk.Button(frame_folder, text="浏览...", command=self.select_folder)
         self.folder_btn.pack(side=tk.RIGHT)
 
-        tk.Label(root, text="输出文件路径（留空则自动生成）：", font=("Arial", 10)).pack(pady=(10, 5))
+        # 输出文件路径（留空则自动生成到桌面，文件名包含日期）
+        tk.Label(root, text="输出文件路径（留空则自动保存到桌面）：", font=("Arial", 10)).pack(pady=(10, 5))
         frame_output = tk.Frame(root)
         frame_output.pack(pady=5, padx=20, fill=tk.X)
         self.output_var = tk.StringVar()
@@ -33,15 +35,17 @@ class ExcelMergeApp:
         self.output_btn = tk.Button(frame_output, text="浏览...", command=self.select_output)
         self.output_btn.pack(side=tk.RIGHT)
 
+        # 执行按钮
         self.run_btn = tk.Button(root, text="开始汇总", command=self.start_processing, bg="#4CAF50", fg="white", font=("Arial", 12), padx=20)
         self.run_btn.pack(pady=20)
 
+        # 状态标签
         self.status_label = tk.Label(root, text="就绪", fg="blue", font=("Arial", 9))
         self.status_label.pack()
 
+        # 进度条
         self.progress = ttk.Progressbar(root, mode='indeterminate', length=400)
         self.progress.pack(pady=10)
-        print("初始化完成")
 
     def select_folder(self):
         folder = filedialog.askdirectory(title="选择存放 Excel 文件的文件夹")
@@ -49,13 +53,16 @@ class ExcelMergeApp:
             self.folder_var.set(folder)
 
     def select_output(self):
-        file = filedialog.asksaveasfilename(
-            title="保存汇总结果为",
-            defaultextension=".xlsx",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
-        )
-        if file:
-            self.output_var.set(file)
+        try:
+            file = filedialog.asksaveasfilename(
+                title="保存汇总结果为",
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+            )
+            if file:
+                self.output_var.set(file)
+        except Exception as e:
+            messagebox.showerror("错误", f"选择文件时出错：{e}\n请手动输入路径或留空使用默认路径。")
 
     def start_processing(self):
         folder = self.folder_var.get().strip()
@@ -66,7 +73,9 @@ class ExcelMergeApp:
         output_file = self.output_var.get().strip()
         if not output_file:
             desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-            output_file = os.path.join(desktop, "汇总统计.xlsx")
+            date_str = datetime.now().strftime("%Y%m%d")
+            filename = f"数据汇总_{date_str}.xlsx"
+            output_file = os.path.join(desktop, filename)
             self.output_var.set(output_file)
 
         self.run_btn.config(state=tk.DISABLED)
@@ -85,14 +94,14 @@ class ExcelMergeApp:
             self.root.after(0, self.on_error, str(e))
 
     def _run_processing(self, folder, output_file):
-        data = []
+        data = []  # 每个元素为 (store, material, remark)
+
         for file_path in glob.glob(os.path.join(folder, '*.xlsx')):
             try:
                 wb = load_workbook(file_path, data_only=True)
-                # 如果您需要固定读取 Sheet3，请将下一行改为 ws = wb['Sheet3']
+                # 若需要固定读取 Sheet3，请将下一行改为 ws = wb['Sheet3']
                 ws = wb.worksheets[0]
-            except Exception as e:
-                print(f"跳过文件 {file_path}: {e}")
+            except Exception:
                 continue
 
             for row in ws.iter_rows(min_row=2, max_col=ws.max_column):
@@ -110,25 +119,31 @@ class ExcelMergeApp:
         if not data:
             raise ValueError("未提取到任何有效数据，请检查文件格式和内容。")
 
+        # 去重并排序
         unique_data = list(set(data))
         unique_data.sort(key=lambda x: (x[0], x[1]))
 
+        # 创建输出工作簿
         out_wb = Workbook()
         out_ws = out_wb.active
         out_ws.title = "汇总"
 
+        # 写入标题
         out_ws['A1'] = '门店'
         out_ws['B1'] = '原料'
         out_ws['C1'] = '备注'
 
+        # 写入数据
         for idx, (store, material, remark) in enumerate(unique_data, start=2):
             out_ws.cell(row=idx, column=1, value=store)
             out_ws.cell(row=idx, column=2, value=material)
             out_ws.cell(row=idx, column=3, value=remark)
 
+        # 合并相同门店和相同原料的单元格（按顺序）
         self._merge_column(out_ws, col_idx=1, start_row=2)
         self._merge_column(out_ws, col_idx=2, start_row=2)
 
+        # 设置列宽
         out_ws.column_dimensions['A'].width = 20
         out_ws.column_dimensions['B'].width = 30
         out_ws.column_dimensions['C'].width = 40
@@ -163,26 +178,20 @@ class ExcelMergeApp:
     def on_success(self, output_file):
         self.progress.stop()
         self.run_btn.config(state=tk.NORMAL)
-        self.status_label.config(text=f"汇总完成！已保存至：{output_file}", fg="green")
+        self.status_label.config(text=f"✅ 汇总完成！已保存至：{output_file}", fg="green")
         messagebox.showinfo("完成", f"汇总表格已生成：\n{output_file}")
-        os.startfile(os.path.dirname(output_file))
+        try:
+            os.startfile(os.path.dirname(output_file))
+        except Exception:
+            pass
 
     def on_error(self, error_msg):
         self.progress.stop()
         self.run_btn.config(state=tk.NORMAL)
-        self.status_label.config(text=f"错误：{error_msg}", fg="red")
+        self.status_label.config(text=f"❌ 错误：{error_msg}", fg="red")
         messagebox.showerror("错误", f"处理出错：\n{error_msg}")
 
 if __name__ == "__main__":
-    try:
-        print("启动 GUI...")
-        root = tk.Tk()
-        app = ExcelMergeApp(root)
-        print("进入主循环...")
-        root.mainloop()
-        print("主循环结束")
-    except Exception as e:
-        print("捕获到异常:", e)
-        import traceback
-        traceback.print_exc()
-        input("按回车键退出...")  # 防止窗口一闪而过
+    root = tk.Tk()
+    app = ExcelMergeApp(root)
+    root.mainloop()
